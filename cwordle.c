@@ -1,10 +1,10 @@
-#include "words.h"
-
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <termios.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <error.h>
 
 // ASCII normalization of `a'-`z' range (97-122 -> 0-25)
 #define ASCII_NORM(x) ((x) - 97)
@@ -56,7 +56,6 @@ typedef enum {
   WORDLE_CHAR_IN,
 } wordle_chk;
 
-/** Character buffer. Accounting for the worst case scenario */
 static char buf[1<<9];
 
 static inline wordle_display
@@ -92,40 +91,6 @@ typedef struct {
   uint k_pos;
   wordle_chk chk;
 } wordle_key_map_t;
-
-// static wordle_key_map_t wordle_kbd_map[26] = {
-//   // first line
-//   [ASCII_NORM('q')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 0},
-//   [ASCII_NORM('w')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 1},
-//   [ASCII_NORM('e')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 2},
-//   [ASCII_NORM('r')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 3},
-//   [ASCII_NORM('t')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 4},
-//   [ASCII_NORM('y')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 5},
-//   [ASCII_NORM('u')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 6},
-//   [ASCII_NORM('i')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 7},
-//   [ASCII_NORM('o')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 8},
-//   [ASCII_NORM('p')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 9},
-
-//   // second line
-//   [ASCII_NORM('a')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 0},
-//   [ASCII_NORM('s')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 1},
-//   [ASCII_NORM('d')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 2},
-//   [ASCII_NORM('f')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 3},
-//   [ASCII_NORM('g')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 4},
-//   [ASCII_NORM('h')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 5},
-//   [ASCII_NORM('j')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 6},
-//   [ASCII_NORM('k')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 7},
-//   [ASCII_NORM('l')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 8},
-
-//   // third line
-//   [ASCII_NORM('z')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 0},
-//   [ASCII_NORM('x')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 1},
-//   [ASCII_NORM('c')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 2},
-//   [ASCII_NORM('v')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 3},
-//   [ASCII_NORM('b')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 4},
-//   [ASCII_NORM('n')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 5},
-//   [ASCII_NORM('m')] = {.chk = WORDLE_CHAR_NOT, .k_pos = 6},
-// };
 
 static const char* wordle_kbd_qwerty[] = {
   "qwertyuiop",
@@ -184,7 +149,7 @@ wordle_cur_move(cur_move_t t, uint n, wordle_display dpy) {
 
 //// GAME
 
-static inline char* wordle_answer_get(void) {
+static inline char* wordle_answer_get(int wordsfd) {
   // DEBUG
   return "plane";
 }
@@ -516,15 +481,11 @@ static void wordle_game(char* ans) {
 //// HELPERS
 
 static inline int help(void) {
-  puts("Usage:       cwordle");
-  puts("Description: Wordle clone written in C. This program takes no \
-arguments, every time it's called it'll choose another word");
-
-  return 0;
-}
-
-static inline int see_help(void) {
-  puts("[ !! ] Wrong usage. See `--help'");
+  puts("Usage:       cwordle WORD-LIST");
+  puts(\
+"Description: Wordle clone written in C. Will init a game of wordle given the\n"
+"             WORD-LIST. It must be a list of 5-char words separated by\n"
+"             newlines");
 
   return 0;
 }
@@ -564,8 +525,13 @@ static wordle_display wordle_display_setup(wordle_display dpy) {
 
 //// MAIN GAME
 
-static int wordle_main(void) {
-  char* ans = wordle_answer_get();
+static int wordle_main(int wordsfd) {
+  if (wordsfd <= 0) {
+    puts("[ !! ] Missing word list. See `--help'.");
+    return 1;
+  }
+
+  char* ans = wordle_answer_get(wordsfd);
   wordle_display dpy = {.buf = buf};
 
   wordle_term_init();
@@ -582,11 +548,21 @@ static int wordle_main(void) {
 ////
 
 int main(int argc, char** argv) {
-  // only handle `-h' and `--help', the program takes no other arguments
-  if (argc >= 2) {
-    return (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)?
-      help(): see_help();
+  int wordsfd = 0;
+
+  for (uint i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      help();
+    }
+    else {
+      wordsfd = open(argv[i], 0);
+
+      if (wordsfd <= 0) {
+        puts("[ !! ] System error.");
+        return 1;
+      }
+    }
   }
 
-  return wordle_main();
+  return wordle_main(wordsfd);
 }
