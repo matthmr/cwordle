@@ -261,9 +261,6 @@ static wordle_ans wordle_answer_get(int wordsfd) {
     at3_set(ans.cp, n, ++am);
   }
 
-  // DEBUG
-  printf("ans: %s\n", ans.word);
-
   return ans;
 }
 
@@ -583,11 +580,13 @@ wordle_word_check_fixrep(wordle_char_pos cpos, uchar nc, wordle_chk_word chk,
   }
 
   for (uint j = _i; j < 5; j++) {
-    if (input[j] == c) {
+    if (input[j] == c && chk[j].t != WORDLE_CHAR_IN) {
       at3_set(cpos, nc, j+1);
-      break;
+      return exp;
     }
   }
+
+  at3_set(cpos, nc, 0);
 
   return exp;
 }

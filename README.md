@@ -12,7 +12,7 @@ Run `make cwordle` to build the program. `make` variables are:
 ## Command line
 
 Call `cwordle WORD-LIST` to play the game. The word list must be a plaintext
-list of five-character words alphacetically sorted sorted (use `cat` and `sort`)
+list of five-character words, alphabetically sorted. Use `cat` and `sort`
 to add words to the list in the right order.
 
 ## Playing

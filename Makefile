@@ -8,7 +8,7 @@ TARGETS:=cwordle
 
 cwordle: cwordle.o
 	@echo "CC -o " cwordle
-	@$(CC) $(CFLAGS) cwordle.o words.o -o cwordle
+	@$(CC) $(CFLAGS) cwordle.o -o cwordle
 
 cwordle.o: cwordle.c
 	@echo "CC -o" cwordle.o
