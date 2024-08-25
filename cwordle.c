@@ -4,7 +4,7 @@
 #include <termios.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include <error.h>
+#include <time.h>
 
 // ASCII normalization of `a'-`z' range (97-122 -> 0-25)
 #define ASCII_NORM(x) ((x) - 97)
@@ -77,7 +77,16 @@ typedef enum {
   WORDLE_CHAR_IN,
 } wordle_chk;
 
-static char buf[1<<9];
+static char buf[1<<9], iobuf[4096];
+
+typedef char wordle_word[5];
+
+typedef struct {
+  wordle_word* list;
+  uint size;
+} wordle_words;
+
+static wordle_words word_list;
 
 static inline wordle_display
 wordle_draw(char* str, uint size, wordle_display dpy) {
@@ -162,6 +171,15 @@ wordle_cur_move(cur_move_t t, uint n, wordle_display dpy) {
     mod *= 10;
   }
 
+  // reverse the result
+  for (uint j = 2; j <= i/2; j++) {
+    char o = cmd[j];
+    uint oi = (i - 1) - (j - 2);
+
+    cmd[j] = cmd[oi];
+    cmd[oi] = o;
+  }
+
   cmd[i] = (char) t;
   i++;
 
@@ -175,43 +193,153 @@ wordle_cur_move(cur_move_t t, uint n, wordle_display dpy) {
 typedef uchar wordle_char_pos[17];
 
 typedef struct {
-  char* str;
+  wordle_word word;
   wordle_char_pos cp;
 } wordle_ans;
+
+static uint wordle_ins_word(wordle_word word, uint tsize) {
+  uint csize = word_list.size;
+
+  if ((csize + 1) >= tsize) {
+    tsize += 1024;
+    word_list.list = realloc(word_list.list, tsize*5);
+  }
+
+  memcpy((word_list.list + csize), word, 5);
+
+  word_list.size++;
+
+  return tsize;
+}
+
+static void wordle_read_wordlist(int wordsfd) {
+  uint buf_read = 0;
+
+  wordle_word word;
+  uint word_i = 0;
+
+  uint tsize = 0;
+
+  do {
+    buf_read = read(wordsfd, iobuf, 4096);
+
+    for (uint i = 0; i < buf_read; i++) {
+      if (iobuf[i] == '\n') {
+        word_i = 0;
+        tsize = wordle_ins_word(word, tsize);
+        continue;
+      }
+
+      word[word_i] = iobuf[i];
+      word_i++;
+    }
+  } while (buf_read == 4096);
+
+  close(wordsfd);
+}
 
 static wordle_ans wordle_answer_get(int wordsfd) {
   wordle_ans ans = {0};
 
-  // DEBUG
-  ans.str = "spool";
+  wordle_read_wordlist(wordsfd);
+
+  // crude, but I don't care
+  srand((uint)time(NULL));
+
+  uint idx = rand() % word_list.size;
+
+  char* ans_str = word_list.list[idx];
 
   for (uint i = 0; i < 5; i++) {
-    uchar n = ASCII_NORM(ans.str[i]);
+    ans.word[i] = ans_str[i];
+  }
+
+  for (uint i = 0; i < 5; i++) {
+    uchar n = ASCII_NORM(ans.word[i]);
     uchar am = at3(ans.cp, n);
 
     at3_set(ans.cp, n, ++am);
   }
 
+  // DEBUG
+  printf("ans: %s\n", ans.word);
+
   return ans;
 }
 
-static char* wordle_word_get(char* input) {
+typedef struct {
+  uint at;
+  bool found;
+} wordle_valid;
+
+static wordle_valid wordle_valid_cword(uint at, uint off, char c) {
+  const uint size = word_list.size;
+  wordle_word* list = word_list.list;
+
+  wordle_valid valid = {0};
+
+  if (!at) {
+    for (uint i = at; i < size; i++) {
+      char lc = list[i][off];
+
+      if (lc == c) {
+        return valid.found = true, valid.at = i, valid;
+      }
+    }
+  }
+
+  char* atm = list[at];
+
+  for (uint i = at; i < size; i++) {
+    char lc = list[i][off];
+
+    // it's over...
+    if (lc > c || strncmp(list[i], atm, off)) {
+      break;
+    }
+
+    if (lc == c) {
+      return valid.found = true, valid.at = i, valid;
+    }
+  }
+
+  return valid;
+}
+
+// TODO: very unoptimized, I can't be bothered
+static bool wordle_valid_word(wordle_word input) {
+  wordle_valid valid = {0};
+
+  for (uint i = 0; i < 5; i++) {
+    valid = wordle_valid_cword(valid.at, i, input[i]);
+
+    if (!valid.found) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static char* wordle_word_get(char* input, uint line) {
   char str[1];
+
   char fixbuf[32] = {0};
+  wordle_display fixdpy = {.draw_head = fixbuf, .buf = fixbuf};
 
   uint letters = 0;
+  bool error = false;
 
 loop:
   for (char c;;)  {
     c = getchar();
 
     switch (c) {
+    // DEL
     case 0x7f:
       // put the cursor left (unless it's at the edge), and output a dot where
       // we were
       if (letters) {
-        wordle_display fixdpy = {.draw_head = fixbuf, .buf = fixbuf};
-
         fixdpy = wordle_cur_move(CUR_LEFT, 1, fixdpy);
         fixdpy = wordle_draw(".", 1, fixdpy);
         fixdpy = wordle_cur_move(CUR_LEFT, 1, fixdpy);
@@ -222,6 +350,8 @@ loop:
       }
 
       break;
+
+    // RET
     case 0x0a:
       if (letters == 5) {
         goto done;
@@ -240,9 +370,30 @@ loop:
   }
 
 done:
-  // TODO: check the word against the word list
-  if (false) {
+  if (!wordle_valid_word(input)) {
+    fixdpy = wordle_cur_move(CUR_DOWN, 10 - line, fixdpy);
+    fixdpy = wordle_draw(S("\nNOT "), fixdpy);
+    fixdpy = wordle_draw(input, 5, fixdpy);
+
+    wordle_display_flush(&fixdpy);
+
+    fixdpy = wordle_cur_move(CUR_UP, 11 - line, fixdpy);
+    fixdpy = wordle_cur_move(CUR_RIGHT, 7, fixdpy);
+
+    wordle_display_flush(&fixdpy);
+
+    error = true;
+
     goto loop;
+  }
+
+  // valid input: clear error if we had any
+  if (error) {
+    fixdpy = wordle_cur_move(CUR_DOWN, 11 - line, fixdpy);
+    fixdpy = wordle_draw(S("\x1b[2K"), fixdpy);
+    fixdpy = wordle_cur_move(CUR_UP, 11 - line, fixdpy);
+
+    wordle_display_flush(&fixdpy);
   }
 
   return input;
@@ -440,6 +591,7 @@ wordle_word_check_fixrep(wordle_char_pos cpos, uchar nc, wordle_chk_word chk,
   return exp;
 }
 
+// TODO: I think there's still a bug with match/other.../match in `input'
 static bool
 wordle_word_check(char* input, wordle_ans ans, uint line,
                   wordle_chk_dpy chk_dpy) {
@@ -460,7 +612,7 @@ wordle_word_check(char* input, wordle_ans ans, uint line,
     wordle_chk cc = WORDLE_CHAR_NOT;
     uint _ans_am = at3(_ans, nc);
 
-    if (ans.str[i] == c) {
+    if (ans.word[i] == c) {
       cc = WORDLE_CHAR_IN;
 
       // we can't have this match: actually we can, fuck whoever said we can't
@@ -519,15 +671,16 @@ mark:
 }
 
 static void wordle_game(wordle_ans ans) {
-  char input[5] = {0};
+  wordle_word input = {0};
 
   wordle_chk_dpy chk_dpy = {0};
   wordle_display edpy = {.buf = buf, .draw_head = buf, .size = 0};
 
   bool won = false;
+  char tries[1];
 
   for (uint try = 0; try < 6; try++) {
-    wordle_word_get(input);
+    wordle_word_get(input, try);
 
     won = wordle_word_check(input, ans, try, chk_dpy);
 
@@ -535,31 +688,41 @@ static void wordle_game(wordle_ans ans) {
       edpy = wordle_cur_move(CUR_DOWN, 8 - try, edpy);
       edpy = wordle_draw(LN("\n"), edpy);
 
+      // OK plane 1/6
+      edpy = wordle_draw(S("OK "), edpy);
+      edpy = wordle_draw(ans.word, 5, edpy);
+      edpy = wordle_draw(" ", 1, edpy);
+      edpy = wordle_draw((tries[0] = try + 49, tries), 1, edpy);
+      edpy = wordle_draw(S("/6\n"), edpy);
+
       wordle_display_flush(&edpy);
 
-      printf("OK %s %d/6\n", ans.str, try+1);
-
-      return;
+      break;
     }
 
     if (try == 5) {
       edpy = wordle_cur_move(CUR_DOWN, 8 - try, edpy);
       edpy = wordle_draw(LN("\n"), edpy);
 
+      // FAIL plane
+      edpy = wordle_draw(S("FAIL "), edpy);
+      edpy = wordle_draw(ans.word, 5, edpy);
+      edpy = wordle_draw(S("\n"), edpy);
+
       wordle_display_flush(&edpy);
 
-      printf("FAIL %s\n", ans.str);
-
-      return;
+      break;
     }
   }
+
+  wordle_term_exit();
+  exit(0);
 }
 
 //// HELPERS
 
 static inline int help(void) {
-  puts("Usage:       cwordle WORD-LIST");
-  puts(\
+  puts("Usage:       cwordle WORD-LIST\n"
 "Description: Wordle clone written in C. Will init a game of wordle given the\n"
 "             WORD-LIST. It must be a list of 5-char words separated by\n"
 "             newlines");
@@ -616,8 +779,6 @@ static int wordle_main(int wordsfd) {
   dpy = wordle_display_setup(dpy);
 
   wordle_game(ans);
-
-  wordle_term_exit();
 
   return 0;
 }
