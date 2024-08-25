@@ -439,7 +439,7 @@ wordle_display_chk(wordle_chk_word word_chk, wordle_display dpy) {
     switch (word_chk[i].t) {
     case WORDLE_CHAR_IN:
       if (lc != GREEN) {
-        dpy = wordle_draw_color(S(COL_GREEN_BG), !lc, dpy);
+        dpy = wordle_draw_color(S(COL_GREEN_BG), !i, dpy);
       }
 
       lc = GREEN;
@@ -447,18 +447,19 @@ wordle_display_chk(wordle_chk_word word_chk, wordle_display dpy) {
 
     case WORDLE_CHAR_OTHER:
       if (lc != YELLOW) {
-        dpy = wordle_draw_color(S(COL_YELLOW_BG), !lc, dpy);
+        dpy = wordle_draw_color(S(COL_YELLOW_BG), !i, dpy);
       }
 
       lc = YELLOW;
       goto draw_c;
 
-    case WORDLE_CHAR_NOT: ;
-      // hit without any colors: reset `lc'
-      if (lc) {
-        lc = NONE;
-        dpy = wordle_draw_color(S(COL_NONE), false, dpy);
+    case WORDLE_CHAR_NOT:
+      if (lc != BLACK) {
+        dpy = wordle_draw_color(S(COL_BLACK_BG), !i, dpy);
       }
+
+      lc = BLACK;
+      goto draw_c;
 
 draw_c:
       cbuf[0] = word_chk[i].c;
