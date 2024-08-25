@@ -20,19 +20,40 @@ typedef char bool;
 #define true 1
 #define false 0
 
-static inline char at2(uchar* dat, uint at) {
-  char _at = (at & 0x03) << 1;
-  char mask = (1 << _at) | (1 << (_at + 1));
+// three-bit bitfield get
+static inline char at3(uchar* dat, uint at) {
+  uchar idx = at % 2;
+  uchar mask = 0x7 << (3*idx);
 
-  return (dat[at >> 2] & mask) >> _at;
+  return (dat[at/2] & mask) >> (3*idx);
 }
 
-// `new' is two bit data
-static inline void at2_set(uchar* dat, uint at, char new) {
-  char _at = (at & 0x03) << 1;
-  new <<= _at;
+// three-bit bitfield set
+static inline void at3_set(uchar* dat, uint at, uchar new) {
+  uchar idx = at % 2;
 
-  dat[at >> 2] |= new;
+  new = (new & 0x7) << (3*idx);
+
+  // zero out the current bits, then or the new result
+  dat[at/2] = (dat[at/2] & ~(0x7 << (3*idx))) | new;
+}
+
+// two-bit bitfield get
+static inline char at2(uchar* dat, uint at) {
+  uchar idx = at % 4;
+  uchar mask = 0x3 << (2*idx);
+
+  return (dat[at/4] & mask) >> (2*idx);
+}
+
+// two-bit bitfield set
+static inline void at2_set(uchar* dat, uint at, uchar new) {
+  uchar idx = at % 4;
+
+  new = (new & 0x3) << (2*idx);
+
+  // zero out the current bits, then or the new result
+  dat[at/4] = (dat[at/4] & ~(0x3 << (2*idx))) | new;
 }
 
 #define COL_GREEN_BG "102"
@@ -149,9 +170,29 @@ wordle_cur_move(cur_move_t t, uint n, wordle_display dpy) {
 
 //// GAME
 
-static inline char* wordle_answer_get(int wordsfd) {
+// three-bit bitfield: 000-101 for 26 entries -> 130b. used for repetition of
+// normalized ASCII characters in a given word
+typedef uchar wordle_char_pos[17];
+
+typedef struct {
+  char* str;
+  wordle_char_pos cp;
+} wordle_ans;
+
+static wordle_ans wordle_answer_get(int wordsfd) {
+  wordle_ans ans = {0};
+
   // DEBUG
-  return "plane";
+  ans.str = "spool";
+
+  for (uint i = 0; i < 5; i++) {
+    uchar n = ASCII_NORM(ans.str[i]);
+    uchar am = at3(ans.cp, n);
+
+    at3_set(ans.cp, n, ++am);
+  }
+
+  return ans;
 }
 
 static char* wordle_word_get(char* input) {
@@ -200,6 +241,10 @@ loop:
 
 done:
   // TODO: check the word against the word list
+  if (false) {
+    goto loop;
+  }
+
   return input;
 }
 
@@ -208,42 +253,8 @@ typedef struct {
   wordle_chk t;
 } wordle_chk_word[5];
 
-// typedef struct {
-//   char c;
-//   wordle_chk t;
-// } wordle_chk_dpy_t[5];
-
-typedef uchar wordle_chk_dpy[(26*2) / (sizeof(char)*8) + 1];
-
-static inline wordle_chk
-wordle_char_check(char c, uint pos, char* ans, uchar* nn) {
-  // how many repeting `c' we have on the answer. useful for having `c' be both
-  // `WORDLE_CHAR_IN' and `WORDLE_CHAR_OTHER', for example:
-  //      answer: moons, input: spool (3rd `o' is IN, 4th `o' is OTHER )
-  uint rep = 0;
-  uint n = ASCII_NORM(c);
-
-  wordle_chk chk = WORDLE_CHAR_NOT;
-
-  // `c' is a character of `ans' and in the right position: `WORDLE_CHAR_IN'
-  if (ans[pos] == c) {
-    nn[n]++;
-    return WORDLE_CHAR_IN;
-  }
-
-  for (uint i = 0; i < 5; i++) {
-    if (ans[i] == c) {
-      rep++;
-    }
-  }
-
-  if ((nn[n] + 1) <= rep) {
-    nn[n]++;
-    return WORDLE_CHAR_OTHER;
-  }
-
-  return chk;
-}
+// two bit bitfield: 00-11 for 26 entries -> 42b
+typedef uchar wordle_chk_dpy[6];
 
 static wordle_display
 wordle_draw_color(char* str, uint size, bool contrast, wordle_display dpy) {
@@ -402,46 +413,112 @@ wordle_display_kbd(wordle_chk_dpy chk_dpy, uint line, wordle_display dpy) {
   return dpy;
 }
 
+static inline wordle_chk
+wordle_word_check_fixrep(wordle_char_pos cpos, uchar nc, wordle_chk_word chk,
+                         char* input, char c, wordle_chk exp) {
+  uint _i = at3(cpos, nc);
+
+  // we already have it, without any ambiguity
+  if (!_i) {
+    return WORDLE_CHAR_NOT;
+  }
+
+  if (chk[_i - 1].t != WORDLE_CHAR_IN) {
+    chk[_i - 1].t = WORDLE_CHAR_NOT;
+  }
+  else { // if (exp != WORDLE_CHAR_IN) {
+    return WORDLE_CHAR_NOT;
+  }
+
+  for (uint j = _i; j < 5; j++) {
+    if (input[j] == c) {
+      at3_set(cpos, nc, j+1);
+      break;
+    }
+  }
+
+  return exp;
+}
+
 static bool
-wordle_word_check(char* input, char* ans, uint line, wordle_chk_dpy* chk_dpy) {
+wordle_word_check(char* input, wordle_ans ans, uint line,
+                  wordle_chk_dpy chk_dpy) {
   wordle_chk_word chk = {0};
+  wordle_char_pos cpos = {0}, _ans = {0};
+
+  // copy `ans.cp' so that we can use it for analysis
+  memcpy(_ans, ans.cp, sizeof(_ans));
 
   bool win = true;
 
-  // how many times `c' is non-nil with respect to matches
-  uchar nonnil[26] = {0};
-
+  // iterate `input' answer and generate a check status for each of its
+  // characters, also updating the keyboard in the process
   for (uint i = 0; i < 5; i++) {
-    char c = input[i];
+    char c = input[i], nc = ASCII_NORM(c);
     chk[i].c = c;
 
-    wordle_chk wc = wordle_char_check(chk[i].c, i, ans, nonnil);
-    chk[i].t = wc;
+    wordle_chk cc = WORDLE_CHAR_NOT;
+    uint _ans_am = at3(_ans, nc);
 
-    win &= (chk[i].t == WORDLE_CHAR_IN);
+    if (ans.str[i] == c) {
+      cc = WORDLE_CHAR_IN;
 
-    wordle_chk dc = at2(*chk_dpy, ASCII_NORM(c));
+      // we can't have this match: actually we can, fuck whoever said we can't
+      if (!_ans_am) {
+        cc = wordle_word_check_fixrep(cpos, nc, chk, input, c, cc);
+      }
+
+      // we can still have this match: count down
+      else {
+        at3_set(_ans, nc, _ans_am - 1);
+      }
+
+      goto mark;
+    }
+
+    // `c' appears in `ans' in another position: flag current match
+    if (at3(ans.cp, nc)) {
+      cc = WORDLE_CHAR_OTHER;
+
+      // we shouldn't have more than this, go to `cpos', then remove the leading
+      // match, and set whatever else as its match instead
+      if (!_ans_am) {
+        cc = wordle_word_check_fixrep(cpos, nc, chk, input, c, cc);
+        goto mark;
+      }
+
+      // we can still have this match: count down
+      at3_set(_ans, nc, _ans_am - 1);
+
+      // only set on first match
+      if (!at3(cpos, nc)) {
+        at3_set(cpos, nc, i + 1);
+      }
+    }
+
+mark:
+    chk[i].t = cc;
+
+    win = win && (cc == WORDLE_CHAR_IN);
+
+    wordle_chk dc = at2(chk_dpy, nc);
 
     // we use `1 + wordle_chk', so that we can differentiate between _NOT and
     // some key that was never pressed
-    if (!dc || MAX(dc - 1, wc) == wc) {
-      at2_set(*chk_dpy, ASCII_NORM(c), wc + 1);
+    if (!dc || MAX(dc - 1, cc) == cc) {
+      at2_set(chk_dpy, nc, cc + 1);
     }
   }
 
   wordle_display dpy = {.buf = buf, .draw_head = buf, .size = 0};
 
   dpy = wordle_display_chk(chk, dpy);
-
-  wordle_chk_dpy chkdpy;
-  memcpy(chkdpy, chk_dpy, 7);
-
-  dpy = wordle_display_kbd(chkdpy, line, dpy);
+  dpy = wordle_display_kbd(chk_dpy, line, dpy);
 
   return win;
 }
 
-static void wordle_game(char* ans) {
+static void wordle_game(wordle_ans ans) {
   char input[5] = {0};
 
   wordle_chk_dpy chk_dpy = {0};
@@ -452,7 +529,7 @@ static void wordle_game(char* ans) {
   for (uint try = 0; try < 6; try++) {
     wordle_word_get(input);
 
-    won = wordle_word_check(input, ans, try, &chk_dpy);
+    won = wordle_word_check(input, ans, try, chk_dpy);
 
     if (won) {
       edpy = wordle_cur_move(CUR_DOWN, 8 - try, edpy);
@@ -460,7 +537,7 @@ static void wordle_game(char* ans) {
 
       wordle_display_flush(&edpy);
 
-      printf("OK %s %d/6\n", ans, try+1);
+      printf("OK %s %d/6\n", ans.str, try+1);
 
       return;
     }
@@ -471,7 +548,7 @@ static void wordle_game(char* ans) {
 
       wordle_display_flush(&edpy);
 
-      printf("FAIL %s\n", ans);
+      printf("FAIL %s\n", ans.str);
 
       return;
     }
@@ -531,7 +608,7 @@ static int wordle_main(int wordsfd) {
     return 1;
   }
 
-  char* ans = wordle_answer_get(wordsfd);
+  wordle_ans ans = wordle_answer_get(wordsfd);
   wordle_display dpy = {.buf = buf};
 
   wordle_term_init();
@@ -552,7 +629,7 @@ int main(int argc, char** argv) {
 
   for (uint i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-      help();
+      return help();
     }
     else {
       wordsfd = open(argv[i], 0);
