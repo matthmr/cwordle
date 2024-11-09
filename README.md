@@ -30,7 +30,7 @@ The matching algorithm is not greedy, meaning the answer "spool" with the guess
 Press ENTER to submit a word, it'll do nothing if you have less than five
 characters. If the word is not in the word list, it'll output:
 
-- NOT (WORD)
+- NO (WORD)
 
 in the output field.
 

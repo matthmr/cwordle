@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <time.h>
+#include <signal.h>
 
 // ASCII normalization of `a'-`z' range (97-122 -> 0-25)
 #define ASCII_NORM(x) ((x) - 97)
@@ -133,10 +134,26 @@ typedef enum {
   CUR_DOWN = 'B',
   CUR_RIGHT = 'C',
   CUR_LEFT = 'D',
+
+  CUR_DOWN_ABS = 'E',
+  CUR_UP_ABS = 'F',
 } cur_move_t;
 
 static struct termios term_old;
 static struct termios term_new;
+
+static void term_exit(int _sig) {
+  tcsetattr(STDIN_FILENO, TCSANOW, &term_old);
+  puts("\e[?25h");
+
+  if (_sig) {
+    raise(SIGTERM);
+  }
+}
+
+static inline void wordle_term_exit(void) {
+  term_exit(0);
+}
 
 static inline void wordle_term_init(void) {
   tcgetattr(STDIN_FILENO, &term_old);
@@ -145,10 +162,9 @@ static inline void wordle_term_init(void) {
   term_new.c_lflag &= ~(ICANON|ECHO);
 
   tcsetattr(STDIN_FILENO, TCSANOW, &term_new);
-}
+  puts("\e[?25l");
 
-static inline void wordle_term_exit(void) {
-  tcsetattr(STDIN_FILENO, TCSANOW, &term_old);
+  signal(SIGINT, term_exit);
 }
 
 static inline wordle_display
@@ -388,7 +404,6 @@ static char* wordle_word_get(char* input, uint line) {
   wordle_display fixdpy = {.draw_head = fixbuf, .buf = fixbuf};
 
   uint letters = 0;
-  bool error = false;
 
 loop:
   for (char c;;)  {
@@ -400,13 +415,22 @@ loop:
       // put the cursor left (unless it's at the edge), and output a dot where
       // we were
       if (letters) {
-        fixdpy = wordle_cur_move(CUR_LEFT, 1, fixdpy);
-        fixdpy = wordle_draw(".", 1, fixdpy);
-        fixdpy = wordle_cur_move(CUR_LEFT, 1, fixdpy);
+        fixdpy = wordle_cur_move(CUR_UP_ABS, 12 - line, fixdpy);
+        fixdpy = wordle_cur_move(CUR_RIGHT, 11 + (letters-1), fixdpy);
+
+        // subs the current char
+        fixdpy = wordle_draw("_", 1, fixdpy);
+
+        if (letters != 5) {
+          fixdpy = wordle_draw(".", 1, fixdpy);
+        }
 
         wordle_display_flush(&fixdpy);
 
         letters--;
+
+        fixdpy = wordle_cur_move(CUR_DOWN, 12 - line, fixdpy);
+        wordle_display_flush(&fixdpy);
       }
 
       break;
@@ -416,44 +440,45 @@ loop:
       if (letters == 5) {
         goto done;
       }
-    }
 
-    if (c >= 'a' && c <= 'z' && letters < 5) {
-      // echo the letter out
-      str[0] = c;
-      wordle_display_flush_str(str, 1);
+    // LETTERS
+    default:
+      if (c >= 'a' && c <= 'z' && letters < 5) {
+        letters++;
 
-      input[letters] = c;
+        fixdpy = wordle_cur_move(CUR_UP_ABS, 12 - line, fixdpy);
+        fixdpy = wordle_cur_move(CUR_RIGHT, 11 + (letters-1), fixdpy);
 
-      letters++;
+        wordle_display_flush(&fixdpy);
+
+        // echo the letter out
+        str[0] = c;
+        wordle_display_flush_str(str, 1);
+
+        input[letters-1] = c;
+
+        if (letters != 5) {
+          str[0] = '_';
+          wordle_display_flush_str(str, 1);
+        }
+
+        fixdpy = wordle_cur_move(CUR_DOWN_ABS, 12 - line, fixdpy);
+        wordle_display_flush(&fixdpy);
+      }
     }
   }
 
 done:
   if (!wordle_valid_word(input)) {
-    fixdpy = wordle_cur_move(CUR_DOWN, 10 - line, fixdpy);
-    fixdpy = wordle_draw(S("\nNOT "), fixdpy);
+    fixdpy = wordle_cur_move(CUR_UP_ABS, 1, fixdpy);
+    fixdpy = wordle_draw(S("NO "), fixdpy);
     fixdpy = wordle_draw(input, 5, fixdpy);
-
     wordle_display_flush(&fixdpy);
 
-    fixdpy = wordle_cur_move(CUR_UP, 11 - line, fixdpy);
-    fixdpy = wordle_cur_move(CUR_RIGHT, 7, fixdpy);
-
+    fixdpy = wordle_cur_move(CUR_DOWN_ABS, 1, fixdpy);
     wordle_display_flush(&fixdpy);
-
-    error = true;
 
     goto loop;
-  }
-
-  // valid input: clear error if we had any
-  if (error) {
-    fixdpy = wordle_cur_move(CUR_DOWN, 11 - line, fixdpy);
-    fixdpy = wordle_draw(S("\x1b[2K"), fixdpy);
-    fixdpy = wordle_cur_move(CUR_UP, 11 - line, fixdpy);
-
-    wordle_display_flush(&fixdpy);
   }
 
   return input;
@@ -483,7 +508,7 @@ wordle_draw_color(char* str, uint size, bool contrast, wordle_display dpy) {
 }
 
 static wordle_display
-wordle_display_chk(wordle_chk_word word_chk, wordle_display dpy) {
+wordle_display_chk(wordle_chk_word word_chk, uint line, wordle_display dpy) {
   char cbuf[1];
 
   enum {
@@ -493,7 +518,8 @@ wordle_display_chk(wordle_chk_word word_chk, wordle_display dpy) {
     BLACK,
   } lc = NONE;
 
-  dpy = wordle_cur_move(CUR_LEFT, 5, dpy);
+  dpy = wordle_cur_move(CUR_UP_ABS, 12 - line, dpy);
+  dpy = wordle_cur_move(CUR_RIGHT, 11, dpy);
 
   for (uint i = 0; i < 5; i++) {
     switch (word_chk[i].t) {
@@ -530,6 +556,16 @@ draw_c:
   }
 
   dpy = wordle_draw_color(S(COL_NONE), false, dpy);
+
+  if (line != 5) {
+    dpy = wordle_cur_move(CUR_LEFT, 5, dpy);
+  }
+
+  dpy = wordle_cur_move(CUR_DOWN, 1, dpy);
+
+  if (line != 5) {
+    dpy = wordle_draw("_", 1, dpy);
+  }
 
   wordle_display_flush(&dpy);
 
@@ -588,7 +624,7 @@ static wordle_display
 wordle_display_kbd(wordle_chk_dpy chk_dpy, uint line, wordle_display dpy) {
   // move the cursor left of the input fields, and down to the keyboard `^'
   dpy = wordle_cur_move(CUR_LEFT, 16, dpy);
-  dpy = wordle_cur_move(CUR_DOWN, 7 - line, dpy);
+  dpy = wordle_cur_move(CUR_DOWN, 6 - line, dpy);
 
   wordle_display_flush(&dpy);
 
@@ -617,8 +653,7 @@ wordle_display_kbd(wordle_chk_dpy chk_dpy, uint line, wordle_display dpy) {
     dpy = wordle_display_kbd_row(chk_dpy, key_n, row, dpy);
   }
 
-  dpy = wordle_cur_move(CUR_UP, 9 - line, dpy);
-  dpy = wordle_cur_move(CUR_RIGHT, 11, dpy);
+  dpy = wordle_cur_move(CUR_DOWN_ABS, 2, dpy);
 
   wordle_display_flush(&dpy);
 
@@ -727,7 +762,7 @@ mark:
 
   wordle_display dpy = {.buf = buf, .draw_head = buf, .size = 0};
 
-  dpy = wordle_display_chk(chk, dpy);
+  dpy = wordle_display_chk(chk, line, dpy);
   dpy = wordle_display_kbd(chk_dpy, line, dpy);
 
   return win;
@@ -748,8 +783,7 @@ static void wordle_game(wordle_ans ans) {
     won = wordle_word_check(input, ans, try, chk_dpy);
 
     if (won) {
-      edpy = wordle_cur_move(CUR_DOWN, 8 - try, edpy);
-      edpy = wordle_draw(LN("\n"), edpy);
+      edpy = wordle_cur_move(CUR_UP_ABS, 1, edpy);
 
       // OK plane 1/6
       edpy = wordle_draw(S("OK "), edpy);
@@ -764,8 +798,7 @@ static void wordle_game(wordle_ans ans) {
     }
 
     if (try == 5) {
-      edpy = wordle_cur_move(CUR_DOWN, 8 - try, edpy);
-      edpy = wordle_draw(LN("\n"), edpy);
+      edpy = wordle_cur_move(CUR_UP_ABS, 1, edpy);
 
       // FAIL plane
       edpy = wordle_draw(S("FAIL "), edpy);
@@ -814,13 +847,15 @@ static wordle_display wordle_display_setup(wordle_display dpy) {
 
   dpy = wordle_draw(LN("     q w e r t y u i o p"), dpy);
   dpy = wordle_draw(LN("      a s d f g h j k l"), dpy);
-  dpy = wordle_draw(LN("        z x c v b n m\n"), dpy);
+  dpy = wordle_draw(LN("        z x c v b n m\n\n"), dpy);
 
-  // dpy = wordle_draw(S("\x1b[?25l"), dpy);
-
-  dpy = wordle_cur_move(CUR_UP, 11, dpy);
+  dpy = wordle_cur_move(CUR_UP, 12, dpy);
   dpy = wordle_cur_move(CUR_RIGHT, 11, dpy);
+  dpy = wordle_draw(S("_"), dpy);
 
+  wordle_display_flush(&dpy);
+
+  dpy = wordle_cur_move(CUR_DOWN_ABS, 12, dpy);
   wordle_display_flush(&dpy);
 
   return dpy;
