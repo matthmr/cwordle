@@ -265,50 +265,113 @@ static wordle_ans wordle_answer_get(int wordsfd) {
 }
 
 typedef struct {
-  uint at;
+  wordle_word* lb;
   bool found;
+  uint size;
 } wordle_valid;
 
-static wordle_valid wordle_valid_cword(uint at, uint off, char c) {
-  const uint size = word_list.size;
-  wordle_word* list = word_list.list;
+static wordle_valid wordle_valid_cword(wordle_valid valid, uint coff, char c) {
+  wordle_word* lb = valid.lb;
 
-  wordle_valid valid = {0};
+  const uint gsize = word_list.size;
+  const wordle_word* glist = word_list.list;
 
-  if (!at) {
-    for (uint i = at; i < size; i++) {
-      char lc = list[i][off];
+  valid.found = false;
 
-      if (lc == c) {
-        return valid.found = true, valid.at = i, valid;
+  char oc = 0;
+
+  uint ni = 0;
+  uint _rm = 0;
+
+  for (uint rm = valid.size, ni = 0;;) {
+    char nc = 0;
+
+    // no more division: check if either side could be right
+try_end:
+    if (rm == 1) {
+      wordle_word* tb = lb;
+
+      oc = lb[rm][coff-1];
+
+      if (lb && lb[0][coff] == c) {
+        goto maybe_match;
       }
-    }
-  }
 
-  char* atm = list[at];
+      tb = lb-1;
 
-  for (uint i = at; i < size; i++) {
-    char lc = list[i][off];
+      if (tb >= glist && (!coff || tb[0][coff-1] == oc) &&
+          tb[0][coff] == c) {
+        goto maybe_match;
+      }
 
-    // it's over...
-    if (lc > c || strncmp(list[i], atm, off)) {
+      tb = lb+1;
+
+      if (tb < (glist+gsize) && (!coff || tb[0][coff-1] == oc) &&
+          tb[0][coff] == c) {
+        goto maybe_match;
+      }
+
+      break;
+
+maybe_match:
+      ni = tb - glist;
+
+      if (valid.size != 1) {
+        goto match;
+      }
+
+      // it's very likely this word exists
+      valid.found = true;
       break;
     }
 
-    if (lc == c) {
-      return valid.found = true, valid.at = i, valid;
+    _rm = rm;
+    rm = rm >> 1;
+
+    nc = lb[rm][coff];
+
+    if (nc < c) {
+      lb += rm;
+
+      if (_rm & 0x1) {
+        if (_rm == 1) {
+          goto try_end;
+        }
+
+        rm++;
+      }
+    }
+
+    // if (nc > c);
+
+    // found: also find the earliest one going backwards and the latest one
+    // going forwards
+    if (nc == c) {
+      ni = (lb + rm) - glist;
+
+      uint i = ni;
+
+match:
+      for (i = ni; i && glist[i][coff] == c; i--);
+
+      valid.found = true;
+      lb = valid.lb = (wordle_word*)glist + (i==0? 0: i+1);
+
+      for (i = ni; i != gsize && glist[i][coff] == c; i++);
+
+      valid.size = (glist + (i+1)) - (lb + 1);
+      break;
     }
   }
 
   return valid;
 }
 
-// TODO: very unoptimized, I can't be bothered
 static bool wordle_valid_word(wordle_word input) {
-  wordle_valid valid = {0};
+  wordle_valid valid = {.lb = word_list.list, .size = word_list.size};
 
   for (uint i = 0; i < 5; i++) {
-    valid = wordle_valid_cword(valid.at, i, input[i]);
+    valid = wordle_valid_cword(valid, i, input[i]);
 
     if (!valid.found) {
       return false;
@@ -773,6 +836,9 @@ static int wordle_main(int wordsfd) {
 
   wordle_ans ans = wordle_answer_get(wordsfd);
   wordle_display dpy = {.buf = buf};
+
+  // DEBUG
+  // printf("ans: %s\n", ans.word);
 
   wordle_term_init();
 
