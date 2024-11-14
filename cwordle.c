@@ -404,6 +404,7 @@ static char* wordle_word_get(char* input, uint line) {
   wordle_display fixdpy = {.draw_head = fixbuf, .buf = fixbuf};
 
   uint letters = 0;
+  bool error = false;
 
 loop:
   for (char c;;)  {
@@ -478,7 +479,16 @@ done:
     fixdpy = wordle_cur_move(CUR_DOWN_ABS, 1, fixdpy);
     wordle_display_flush(&fixdpy);
 
+    error = true;
     goto loop;
+  }
+
+  if (error) {
+    fixdpy = wordle_cur_move(CUR_UP_ABS, 1, fixdpy);
+    fixdpy = wordle_draw(S("\e[J"), fixdpy);;
+    fixdpy = wordle_cur_move(CUR_DOWN_ABS, 1, fixdpy);
+
+    wordle_display_flush(&fixdpy);
   }
 
   return input;
@@ -689,7 +699,6 @@ wordle_word_check_fixrep(wordle_char_pos cpos, uchar nc, wordle_chk_word chk,
   return exp;
 }
 
-// TODO: I think there's still a bug with match/other.../match in `input'
 static bool
 wordle_word_check(char* input, wordle_ans ans, uint line,
                   wordle_chk_dpy chk_dpy) {
@@ -832,17 +841,11 @@ static wordle_display wordle_display_setup(wordle_display dpy) {
   dpy.size = 0;
   dpy.buf = dpy.draw_head = buf;
 
-  // first two lines are simply dots
-  dpy = wordle_draw(LN("           ....."), dpy);
-  dpy = wordle_draw(LN("           ....."), dpy);
-
-  // 3rd to 5th lines have the keyboard after. the keyboard has a 5 char offset
-  // from the word input
   dpy = wordle_draw(LN("           ....."), dpy);
   dpy = wordle_draw(LN("           ....."), dpy);
   dpy = wordle_draw(LN("           ....."), dpy);
-
-  // the last line is simply the dots again
+  dpy = wordle_draw(LN("           ....."), dpy);
+  dpy = wordle_draw(LN("           ....."), dpy);
   dpy = wordle_draw(LN("           .....\n"), dpy);
 
   dpy = wordle_draw(LN("     q w e r t y u i o p"), dpy);

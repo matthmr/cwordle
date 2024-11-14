@@ -45,6 +45,10 @@ The game may end with either of these two messages:
 
 You can parse this output to make a statistics file of your own.
 
+## Example
+
+![example game](./shot.png)
+
 ## License
 
 This repository is licensed under the [MIT
