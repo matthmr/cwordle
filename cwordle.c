@@ -296,7 +296,6 @@ static wordle_valid wordle_valid_cword(wordle_valid valid, uint coff, char c) {
 
   char oc = 0;
 
-  uint ni = 0;
   uint _rm = 0;
 
   for (uint rm = valid.size, ni = 0;;) {
@@ -365,17 +364,23 @@ maybe_match:
     if (nc == c) {
       ni = (lb + rm) - glist;
 
-      uint i = ni;
+      wordle_word* lw, *uw;
 
 match:
-      for (i = ni; i && glist[i][coff] == c; i--);
+      lw = &glist[ni];
+      for (; lw >= valid.lb && (*lw)[coff] == c; lw--);
+      lw++;
 
       valid.found = true;
-      lb = valid.lb = (wordle_word*)glist + (i==0? 0: i+1);
+      lb = lw;
 
-      for (i = ni; i != gsize && glist[i][coff] == c; i++);
+      uw = &glist[ni];
+      for (const wordle_word* ub = valid.lb + valid.size;
+           uw < ub && (*uw)[coff] == c; uw++);
+      uw--;
 
-      valid.size = (glist + (i+1)) - (lb + 1);
+      valid.lb = lw;
+      valid.size = (uw - lw) + 1;
       break;
     }
   }
@@ -875,8 +880,9 @@ static int wordle_main(int wordsfd) {
   wordle_ans ans = wordle_answer_get(wordsfd);
   wordle_display dpy = {.buf = buf};
 
-  // DEBUG
-  // printf("ans: %s\n", ans.word);
+#ifdef CWORDLE_DEBUG
+  printf("ans: %s\n", ans.word);
+#endif
 
   wordle_term_init();
 
