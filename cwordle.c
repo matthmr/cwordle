@@ -369,7 +369,7 @@ maybe_match:
 match:
       lw = &glist[ni];
       for (; lw >= valid.lb && (*lw)[coff] == c; lw--);
-      lw++;
+      lw = (lw == &glist[ni]? lw: lw + 1);
 
       valid.found = true;
       lb = lw;
@@ -377,7 +377,7 @@ match:
       uw = &glist[ni];
       for (const wordle_word* ub = valid.lb + valid.size;
            uw < ub && (*uw)[coff] == c; uw++);
-      uw--;
+      uw = (uw == &glist[ni]? uw: uw - 1);
 
       valid.lb = lw;
       valid.size = (uw - lw) + 1;
