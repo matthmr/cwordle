@@ -263,7 +263,6 @@ static wordle_ans wordle_answer_get(int wordsfd) {
   srand((uint)time(NULL));
 
   uint idx = rand() % word_list.size;
-
   char* ans_str = word_list.list[idx];
 
   for (uint i = 0; i < 5; i++) {
@@ -289,98 +288,51 @@ typedef struct {
 static wordle_valid wordle_valid_cword(wordle_valid valid, uint coff, char c) {
   wordle_word* lb = valid.lb;
 
-  const uint gsize = word_list.size;
   const wordle_word* glist = word_list.list;
 
   valid.found = false;
 
-  char oc = 0;
-
-  uint _rm = 0;
-
-  for (uint rm = valid.size, ni = 0;;) {
+  for (uint rm = valid.size, ni = 0, _rm = 0;;) {
     char nc = 0;
-
-    // no more division: check if either side could be right
-try_end:
-    if (rm == 1) {
-      wordle_word* tb = lb;
-
-      oc = lb[rm][coff-1];
-
-      if (lb && lb[0][coff] == c) {
-        goto maybe_match;
-      }
-
-      tb = lb-1;
-
-      if (tb >= glist && (!coff || tb[0][coff-1] == oc) &&
-          tb[0][coff] == c) {
-        goto maybe_match;
-      }
-
-      tb = lb+1;
-
-      if (tb < (glist+gsize) && (!coff || tb[0][coff-1] == oc) &&
-          tb[0][coff] == c) {
-        goto maybe_match;
-      }
-
-      break;
-
-maybe_match:
-      ni = tb - glist;
-
-      if (valid.size != 1) {
-        goto match;
-      }
-
-      // it's very likely this word exists
-      valid.found = true;
-      break;
-    }
 
     _rm = rm;
     rm = rm >> 1;
 
     nc = lb[rm][coff];
 
+    // less than: shift right by `rm'
     if (nc < c) {
       lb += rm;
 
       if (_rm & 0x1) {
-        if (_rm == 1) {
-          goto try_end;
-        }
-
         rm++;
       }
     }
 
-    // if (nc > c);
-
     // found: also find the earliest one going backwards and the latest one
     // going forwards
     if (nc == c) {
-      ni = (lb + rm) - glist;
+      ni = (lb - glist) + rm;
 
       wordle_word* lw, *uw;
 
-match:
       lw = &glist[ni];
       for (; lw >= valid.lb && (*lw)[coff] == c; lw--);
-      lw = (lw == &glist[ni]? lw: lw + 1);
+      lw++;
 
       valid.found = true;
-      lb = lw;
 
       uw = &glist[ni];
       for (const wordle_word* ub = valid.lb + valid.size;
            uw < ub && (*uw)[coff] == c; uw++);
-      uw = (uw == &glist[ni]? uw: uw - 1);
+      uw--;
 
       valid.lb = lw;
       valid.size = (uw - lw) + 1;
+      break;
+    }
+
+    if (_rm == 1 || valid.size == 1) {
       break;
     }
   }
@@ -418,6 +370,7 @@ loop:
     switch (c) {
     // DEL
     case 0x7f:
+#ifndef CWORDLE_DEBUG_INPUT
       // put the cursor left (unless it's at the edge), and output a dot where
       // we were
       if (letters) {
@@ -438,7 +391,7 @@ loop:
         fixdpy = wordle_cur_move(CUR_DOWN, 12 - line, fixdpy);
         wordle_display_flush(&fixdpy);
       }
-
+#endif
       break;
 
     // RET
@@ -452,6 +405,7 @@ loop:
       if (c >= 'a' && c <= 'z' && letters < 5) {
         letters++;
 
+#ifndef CWORDLE_DEBUG_INPUT
         fixdpy = wordle_cur_move(CUR_UP_ABS, 12 - line, fixdpy);
         fixdpy = wordle_cur_move(CUR_RIGHT, 11 + (letters-1), fixdpy);
 
@@ -460,9 +414,10 @@ loop:
         // echo the letter out
         str[0] = c;
         wordle_display_flush_str(str, 1);
-
+#endif
         input[letters-1] = c;
 
+#ifndef CWORDLE_DEBUG_INPUT
         if (letters != 5) {
           str[0] = '_';
           wordle_display_flush_str(str, 1);
@@ -470,12 +425,17 @@ loop:
 
         fixdpy = wordle_cur_move(CUR_DOWN_ABS, 12 - line, fixdpy);
         wordle_display_flush(&fixdpy);
+#endif
       }
     }
   }
 
 done:
   if (!wordle_valid_word(input)) {
+#ifdef CWORDLE_DEBUG_INPUT
+    printf("NO %5s\n", input);
+    letters = 0;
+#else
     fixdpy = wordle_cur_move(CUR_UP_ABS, 1, fixdpy);
     fixdpy = wordle_draw(S("NO "), fixdpy);
     fixdpy = wordle_draw(input, 5, fixdpy);
@@ -483,18 +443,28 @@ done:
 
     fixdpy = wordle_cur_move(CUR_DOWN_ABS, 1, fixdpy);
     wordle_display_flush(&fixdpy);
+#endif
 
     error = true;
     goto loop;
   }
 
   if (error) {
+#ifndef CWORDLE_DEBUG_INPUT
     fixdpy = wordle_cur_move(CUR_UP_ABS, 1, fixdpy);
     fixdpy = wordle_draw(S("\e[J"), fixdpy);;
     fixdpy = wordle_cur_move(CUR_DOWN_ABS, 1, fixdpy);
 
     wordle_display_flush(&fixdpy);
+#endif
   }
+
+#ifdef CWORDLE_DEBUG_INPUT
+  printf("YES %5s\n", input);
+  letters = 0;
+  error = false;
+  goto loop;
+#endif
 
   return input;
 }
@@ -791,7 +761,9 @@ static void wordle_game(wordle_ans ans) {
   bool won = false;
   char tries[1];
 
-  for (uint try = 0; try < 6; try++) {
+  uint try = 0;
+
+  for (try = 0; try < 6; try++) {
     wordle_word_get(input, try);
 
     won = wordle_word_check(input, ans, try, chk_dpy);
@@ -880,13 +852,15 @@ static int wordle_main(int wordsfd) {
   wordle_ans ans = wordle_answer_get(wordsfd);
   wordle_display dpy = {.buf = buf};
 
-#ifdef CWORDLE_DEBUG
+#ifdef CWORDLE_DEBUG_ANS
   printf("ans: %s\n", ans.word);
 #endif
 
   wordle_term_init();
 
+#ifndef CWORDLE_DEBUG_INPUT
   dpy = wordle_display_setup(dpy);
+#endif
 
   wordle_game(ans);
 
